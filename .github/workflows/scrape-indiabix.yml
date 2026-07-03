@@ -1,0 +1,66 @@
+name: Scrape IndiaBIX Current Affairs
+
+# Runs daily at 03:30 UTC (~09:00 IST) and can be triggered manually.
+# Requires two GitHub Actions secrets:
+#   SCRAPE_ENDPOINT       e.g. https://khakhi-ni-khumari.lovable.app/api/public/hooks/scrape-indiabix
+#   SCRAPE_WEBHOOK_SECRET must match the SCRAPE_WEBHOOK_SECRET stored in Lovable Cloud
+#
+# Optional workflow_dispatch inputs let you back-fill a specific date or URL.
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Affair date (YYYY-MM-DD). Blank = today (UTC)."
+        required: false
+      url:
+        description: "IndiaBIX URL. Blank = default for the date."
+        required: false
+      max_items:
+        description: "Max MCQs to import (1-15)."
+        required: false
+        default: "10"
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call scrape webhook
+        env:
+          ENDPOINT: ${{ secrets.SCRAPE_ENDPOINT }}
+          SECRET: ${{ secrets.SCRAPE_WEBHOOK_SECRET }}
+          DATE: ${{ github.event.inputs.date }}
+          URL: ${{ github.event.inputs.url }}
+          MAX_ITEMS: ${{ github.event.inputs.max_items }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ENDPOINT}" ] || [ -z "${SECRET}" ]; then
+            echo "Missing SCRAPE_ENDPOINT or SCRAPE_WEBHOOK_SECRET repo secret." >&2
+            exit 1
+          fi
+
+          BODY=$(jq -nc \
+            --arg date "${DATE}" \
+            --arg url "${URL}" \
+            --arg max "${MAX_ITEMS:-10}" \
+            '{} + (if $date == "" then {} else {date:$date} end)
+               + (if $url  == "" then {} else {url:$url}   end)
+               + {max_items: ($max|tonumber)}')
+
+          echo "Request body: ${BODY}"
+
+          HTTP_CODE=$(curl -sS -o response.json -w "%{http_code}" \
+            -X POST "${ENDPOINT}" \
+            -H "Content-Type: application/json" \
+            -H "x-scrape-secret: ${SECRET}" \
+            --data "${BODY}")
+
+          echo "HTTP ${HTTP_CODE}"
+          cat response.json
+          echo
+
+          if [ "${HTTP_CODE}" -ge 300 ]; then
+            exit 1
+          fi
