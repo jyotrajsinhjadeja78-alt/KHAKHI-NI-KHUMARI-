@@ -27,7 +27,7 @@ on:
       max_items:
         description: "Max MCQs to import (1-15)."
         required: false
-        default: "10"
+        default: "15"
 
 jobs:
   scrape:
