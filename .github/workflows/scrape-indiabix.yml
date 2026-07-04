@@ -3,7 +3,13 @@ name: Scrape IndiaBIX Current Affairs
 # Runs daily at 03:30 UTC (~09:00 IST) and can be triggered manually.
 # Requires two GitHub Actions secrets:
 #   SCRAPE_ENDPOINT       e.g. https://khakhi-ni-khumari.lovable.app/api/public/hooks/scrape-indiabix
-#   SCRAPE_WEBHOOK_SECRET must match the SCRAPE_WEBHOOK_SECRET stored in Lovable Cloud
+#   SCRAPE_WEBHOOK_SECRET must match the SCRAPE_WEBHOOK_SECRET stored in the backend
+#
+# Default behaviour: leave inputs blank. The server walks back from today (UTC)
+# up to 7 days and picks the LAST AVAILABLE current-affairs page that has not
+# already been imported (dedup is enforced server-side against the `imports`
+# table — every successfully imported source_url is remembered as a JSON
+# registry, so re-runs are safe and never create duplicates).
 #
 # Optional workflow_dispatch inputs let you back-fill a specific date or URL.
 
@@ -13,15 +19,15 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: "Affair date (YYYY-MM-DD). Blank = today (UTC)."
+        description: "Affair date (YYYY-MM-DD). Blank = auto-pick last available."
         required: false
       url:
-        description: "IndiaBIX URL. Blank = default for the date."
+        description: "IndiaBIX URL. Blank = default for the resolved date."
         required: false
       max_items:
         description: "Max MCQs to import (1-15)."
         required: false
-        default: "15"
+        default: "10"
 
 jobs:
   scrape:
@@ -61,6 +67,7 @@ jobs:
           cat response.json
           echo
 
+          # Treat "skipped: already imported" as success (idempotent re-run).
           if [ "${HTTP_CODE}" -ge 300 ]; then
             exit 1
           fi
