@@ -26,7 +26,7 @@ on:
       max_dates:
         description: "Safety cap on how many dates to process in one run."
         required: false
-        default: "10"
+        default: "1"
       first_run_start_date:
         description: "Start date to use if state.json has no last_scraped_date (YYYY-MM-DD). Blank = yesterday UTC."
         required: false
