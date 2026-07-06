@@ -1,171 +1,198 @@
 name: Scrape IndiaBIX Current Affairs
 
-# State-driven scraper. Uses `state.json` (committed at repo root) to track
-# the last successfully-processed date. Every run:
-#   1. Reads state.json (auto-creates it if missing).
-#   2. Computes nextDate = last_scraped_date + 1 day
-#      (or FIRST_RUN_START_DATE / yesterday when last_scraped_date is null).
-#   3. Loops forward one date at a time, calling the scrape webhook for each
-#      date. Stops as soon as a date returns "no_page" (page not yet published),
-#      so no date is ever skipped and none is scraped twice.
-#   4. Commits + pushes the updated state.json back to the repo.
-#
-# Required GitHub Actions secrets:
-#   SCRAPE_ENDPOINT       e.g. https://khakhi-ni-khumari.lovable.app/api/public/hooks/scrape-indiabix
-#   SCRAPE_WEBHOOK_SECRET must match the SCRAPE_WEBHOOK_SECRET stored in the backend
+State-driven scraper. Uses state.json (committed at repo root) to track
+
+the last successfully-processed date. Every run:
+
+1. Reads state.json (auto-creates it if missing).
+
+2. Computes nextDate = last_scraped_date + 1 day
+
+(or FIRST_RUN_START_DATE / yesterday when last_scraped_date is null).
+
+3. Loops forward one date at a time, calling the scrape webhook for each
+
+date. Stops as soon as a date returns "no_page" (page not yet published),
+
+so no date is ever skipped and none is scraped twice.
+
+4. Commits + pushes the updated state.json back to the repo.
+
+
+
+Required GitHub Actions secrets:
+
+SCRAPE_ENDPOINT       e.g. https://khakhi-ni-khumari.lovable.app/api/public/hooks/scrape-indiabix
+
+SCRAPE_WEBHOOK_SECRET must match the SCRAPE_WEBHOOK_SECRET stored in the backend
 
 on:
-  schedule:
-    - cron: "30 3 * * *"
-  workflow_dispatch:
-    inputs:
-      max_items:
-        description: "Max MCQs to import per date (1-15)."
-        required: false
-        default: "15"
-      max_dates:
-        description: "Safety cap on how many dates to process in one run."
-        required: false
-        default: "1"
-      first_run_start_date:
-        description: "Start date to use if state.json has no last_scraped_date (YYYY-MM-DD). Blank = yesterday UTC."
-        required: false
+schedule:
+- cron: "30 3 * * *"
+workflow_dispatch:
+inputs:
+max_items:
+description: "Max MCQs to import per date (1-15)."
+required: false
+default: "10"
+max_dates:
+description: "Safety cap on how many dates to process in one run."
+required: false
+default: "10"
+first_run_start_date:
+description: "Start date to use if state.json has no last_scraped_date (YYYY-MM-DD). Blank = yesterday UTC."
+required: false
 
 permissions:
-  contents: write
+contents: write
 
 jobs:
-  scrape:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: true
-          fetch-depth: 1
+scrape:
+runs-on: ubuntu-latest
+steps:
+- name: Checkout repository
+uses: actions/checkout@v4
+with:
+persist-credentials: true
+fetch-depth: 1
 
-      - name: Ensure state.json exists
-        run: |
-          if [ ! -f state.json ]; then
-            echo "state.json missing — creating initial file."
-            cat > state.json <<'JSON'
-          {
-            "last_scraped_date": null,
-            "updated_at": null,
-            "last_status": "never_run"
-          }
-          JSON
-          fi
-          echo "Current state.json:"
-          cat state.json
+- name: Ensure state.json exists  
+    run: |  
+      if [ ! -f state.json ]; then  
+        echo "state.json missing — creating initial file."  
+        cat > state.json <<'JSON'  
+      {  
+        "last_scraped_date": null,  
+        "updated_at": null,  
+        "last_status": "never_run",  
+        "last_message": "Scraper has never been executed."  
+      }  
+      JSON  
+      fi  
+      echo "Current state.json:"  
+      cat state.json  
 
-      - name: Run scraper (catch-up loop)
-        env:
-          ENDPOINT: ${{ secrets.SCRAPE_ENDPOINT }}
-          SECRET: ${{ secrets.SCRAPE_WEBHOOK_SECRET }}
-          MAX_ITEMS: ${{ github.event.inputs.max_items }}
-          MAX_DATES: ${{ github.event.inputs.max_dates }}
-          FIRST_RUN_START_DATE: ${{ github.event.inputs.first_run_start_date }}
-        run: |
-          set -euo pipefail
 
-          if [ -z "${ENDPOINT:-}" ] || [ -z "${SECRET:-}" ]; then
-            echo "Missing SCRAPE_ENDPOINT or SCRAPE_WEBHOOK_SECRET repo secret." >&2
-            exit 1
-          fi
+  - name: Run scraper (catch-up loop)  
+    env:  
+      ENDPOINT: ${{ secrets.SCRAPE_ENDPOINT }}  
+      SECRET: ${{ secrets.SCRAPE_WEBHOOK_SECRET }}  
+      MAX_ITEMS: ${{ github.event.inputs.max_items }}  
+      MAX_DATES: ${{ github.event.inputs.max_dates }}  
+      FIRST_RUN_START_DATE: ${{ github.event.inputs.first_run_start_date }}  
+    run: |  
+      set -euo pipefail  
 
-          MAX_ITEMS="${MAX_ITEMS:-10}"
-          MAX_DATES="${MAX_DATES:-10}"
+      if [ -z "${ENDPOINT:-}" ] || [ -z "${SECRET:-}" ]; then  
+        echo "Missing SCRAPE_ENDPOINT or SCRAPE_WEBHOOK_SECRET repo secret." >&2  
+        exit 1  
+      fi  
 
-          # Determine the starting date (nextDate).
-          LAST=$(jq -r '.last_scraped_date // ""' state.json)
-          if [ -z "${LAST}" ] || [ "${LAST}" = "null" ]; then
-            if [ -n "${FIRST_RUN_START_DATE:-}" ]; then
-              NEXT="${FIRST_RUN_START_DATE}"
-            else
-              # Default first-run: yesterday UTC (earliest safely-available page).
-              NEXT=$(date -u -d "yesterday" +%F)
-            fi
-            echo "First run — starting at ${NEXT}"
-          else
-            NEXT=$(date -u -d "${LAST} +1 day" +%F)
-            echo "Resuming — last_scraped_date=${LAST}, nextDate=${NEXT}"
-          fi
+      MAX_ITEMS="${MAX_ITEMS:-10}"  
+      MAX_DATES="${MAX_DATES:-10}"  
 
-          TODAY=$(date -u +%F)
-          PROCESSED=0
+      # Determine the starting date (nextDate).  
+      LAST=$(jq -r '.last_scraped_date // ""' state.json)  
+      if [ -z "${LAST}" ] || [ "${LAST}" = "null" ]; then  
+        if [ -n "${FIRST_RUN_START_DATE:-}" ]; then  
+          NEXT="${FIRST_RUN_START_DATE}"  
+        else  
+          # Default first-run: yesterday UTC (earliest safely-available page).  
+          NEXT=$(date -u -d "yesterday" +%F)  
+        fi  
+        echo "First run — starting at ${NEXT}"  
+      else  
+        NEXT=$(date -u -d "${LAST} +1 day" +%F)  
+        echo "Resuming — last_scraped_date=${LAST}, nextDate=${NEXT}"  
+      fi  
 
-          while :; do
-            if [ "${PROCESSED}" -ge "${MAX_DATES}" ]; then
-              echo "Reached max_dates=${MAX_DATES}; stopping this run."
-              break
-            fi
-            # Never scrape a future date.
-            if [ "${NEXT}" \> "${TODAY}" ]; then
-              echo "nextDate ${NEXT} is in the future (today=${TODAY}); stopping."
-              break
-            fi
+      TODAY=$(date -u +%F)  
+      PROCESSED=0  
 
-            echo "──────────────────────────────────────────"
-            echo "Scraping date: ${NEXT}"
+      while :; do  
+        if [ "${PROCESSED}" -ge "${MAX_DATES}" ]; then  
+          echo "Reached max_dates=${MAX_DATES}; stopping this run."  
+          break  
+        fi  
+        # Never scrape a future date.  
+        if [ "${NEXT}" \> "${TODAY}" ]; then  
+          echo "nextDate ${NEXT} is in the future (today=${TODAY}); stopping."  
+          break  
+        fi  
 
-            BODY=$(jq -nc \
-              --arg date "${NEXT}" \
-              --arg max  "${MAX_ITEMS}" \
-              '{date: $date, max_items: ($max|tonumber)}')
+        echo "──────────────────────────────────────────"  
+        echo "Scraping date: ${NEXT}"  
 
-            HTTP_CODE=$(curl -sS -o response.json -w "%{http_code}" \
-              -X POST "${ENDPOINT}" \
-              -H "Content-Type: application/json" \
-              -H "x-scrape-secret: ${SECRET}" \
-              --data "${BODY}")
+        BODY=$(jq -nc \  
+          --arg date "${NEXT}" \  
+          --arg max  "${MAX_ITEMS}" \  
+          '{date: $date, max_items: ($max|tonumber)}')  
 
-            echo "HTTP ${HTTP_CODE}"
-            cat response.json; echo
+        HTTP_CODE=$(curl -sS -o response.json -w "%{http_code}" \  
+          -X POST "${ENDPOINT}" \  
+          -H "Content-Type: application/json" \  
+          -H "x-scrape-secret: ${SECRET}" \  
+          --data "${BODY}")  
 
-            if [ "${HTTP_CODE}" -ge 300 ]; then
-              echo "Webhook returned HTTP ${HTTP_CODE} — aborting."
-              exit 1
-            fi
+        echo "HTTP ${HTTP_CODE}"  
+        cat response.json; echo  
 
-            STATUS=$(jq -r '.status // "error"' response.json)
-            NOW=$(date -u +%FT%TZ)
+        if [ "${HTTP_CODE}" -ge 300 ]; then  
+          echo "Webhook returned HTTP ${HTTP_CODE} — aborting."  
+          exit 1  
+        fi  
 
-            case "${STATUS}" in
-              created|already_imported)
-                jq --arg d "${NEXT}" --arg t "${NOW}" --arg s "${STATUS}" \
-                  '.last_scraped_date=$d | .updated_at=$t | .last_status=$s' \
-                  state.json > state.json.tmp && mv state.json.tmp state.json
-                echo "Advanced state.json to ${NEXT} (${STATUS})."
-                PROCESSED=$((PROCESSED + 1))
-                NEXT=$(date -u -d "${NEXT} +1 day" +%F)
-                ;;
-              no_page)
-                jq --arg d "${NEXT}" --arg t "${NOW}" \
-                  '.last_scraped_date=$d | .updated_at=$t | .last_status="no_new_date"' \
-                  state.json > state.json.tmp && mv state.json.tmp state.json
-                echo "No page yet for ${NEXT} — stopping."
-                break
-                ;;
-              *)
-                echo "Unexpected status '${STATUS}' — aborting without advancing state."
-                exit 1
-                ;;
-            esac
-          done
+        STATUS=$(jq -r '.status // "error"' response.json)  
+        NOW=$(date -u +%FT%TZ)  
 
-          echo "Final state.json:"
-          cat state.json
+        case "${STATUS}" in  
+          created)  
+            CREATED=$(jq -r '.created // 0' response.json)  
+            MSG="IndiaBIX Current Affairs for ${NEXT} were successfully scraped and saved (${CREATED} MCQs)."  
+            jq --arg d "${NEXT}" --arg t "${NOW}" --arg s "success" --arg m "${MSG}" \  
+              '.last_scraped_date=$d | .updated_at=$t | .last_status=$s | .last_message=$m' \  
+              state.json > state.json.tmp && mv state.json.tmp state.json  
+            echo "Advanced state.json to ${NEXT} (success)."  
+            PROCESSED=$((PROCESSED + 1))  
+            NEXT=$(date -u -d "${NEXT} +1 day" +%F)  
+            ;;  
+          already_imported)  
+            MSG="IndiaBIX Current Affairs for ${NEXT} were already imported previously."  
+            jq --arg d "${NEXT}" --arg t "${NOW}" --arg s "already_imported" --arg m "${MSG}" \  
+              '.last_scraped_date=$d | .updated_at=$t | .last_status=$s | .last_message=$m' \  
+              state.json > state.json.tmp && mv state.json.tmp state.json  
+            echo "Advanced state.json to ${NEXT} (already_imported)."  
+            PROCESSED=$((PROCESSED + 1))  
+            NEXT=$(date -u -d "${NEXT} +1 day" +%F)  
+            ;;  
+          no_page)  
+            MSG="Current Affairs for ${NEXT} are not yet available on IndiaBIX."  
+            jq --arg t "${NOW}" --arg m "${MSG}" \  
+              '.updated_at=$t | .last_status="no_new_date" | .last_message=$m' \  
+              state.json > state.json.tmp && mv state.json.tmp state.json  
+            echo "No page yet for ${NEXT} — stopping (last_scraped_date unchanged)."  
+            break  
+            ;;  
+          *)  
+            echo "Unexpected status '${STATUS}' — aborting without advancing state."  
+            exit 1  
+            ;;  
+        esac  
 
-      - name: Commit and push state.json
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- state.json; then
-            echo "state.json unchanged — nothing to commit."
-            exit 0
-          fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state.json
-          git commit -m "chore(scrape): update state.json [skip ci]"
-          git push
+      done  
+
+      echo "Final state.json:"  
+      cat state.json  
+
+  - name: Commit and push state.json  
+    run: |  
+      set -euo pipefail  
+      if git diff --quiet -- state.json; then  
+        echo "state.json unchanged — nothing to commit."  
+        exit 0  
+      fi  
+      git config user.name  "github-actions[bot]"  
+      git config user.email "41898282+github-actions[bot]@users.noreply.github.com"  
+      git add state.json  
+      git commit -m "chore(scrape): update state.json [skip ci]"  
+      git push
