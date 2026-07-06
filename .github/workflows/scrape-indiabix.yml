@@ -22,7 +22,7 @@ on:
       max_items:
         description: "Max MCQs to import per date (1-15)."
         required: false
-        default: "10"
+        default: "15"
       max_dates:
         description: "Safety cap on how many dates to process in one run."
         required: false
